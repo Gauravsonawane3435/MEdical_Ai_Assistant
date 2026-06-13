@@ -155,3 +155,34 @@ Since PythonAnywhere is a WSGI-based hosting platform, running an ASGI FastAPI a
 5. **Reload the Web App**:
    - Click the green **Reload** button at the top of the **Web** tab.
    - Your Medical AI Assistant is now live at `http://yourusername.pythonanywhere.com`!
+
+---
+
+## Production Deployment on Render
+
+Render natively supports ASGI/FastAPI applications and Python web services. We have pre-configured a `render.yaml` Blueprint file for quick deployment.
+
+### Step-by-Step Render Setup
+
+1. **Push your code to GitHub/GitLab**.
+2. **Create a new Web Service**:
+   - Log in to your [Render Dashboard](https://dashboard.render.com).
+   - Click **New +** on the top right and select **Web Service**.
+   - Connect your Git repository.
+3. **Configure Web Service Settings**:
+   - **Name**: `medical-ai-assistant`
+   - **Runtime**: `Python`
+   - **Build Command**: `pip install -r requirements.txt`
+   - **Start Command**: `uvicorn app.main:app --host 0.0.0.0 --port $PORT`
+4. **Configure Environment Variables**:
+   - Scroll down to the **Environment Variables** section.
+   - Click **Add Environment Variable**:
+     - **Key**: `HF_TOKEN`
+     - **Value**: `your_real_huggingface_access_token_here`
+   - Click **Add Environment Variable** to select Python version (optional but recommended):
+     - **Key**: `PYTHON_VERSION`
+     - **Value**: `3.10.0`
+5. **Deploy**:
+   - Click **Create Web Service** at the bottom. Render will automatically build the environment, install the dependencies, and deploy the application.
+   - Once the deploy completes successfully, your app will be live at the provided `.onrender.com` URL!
+
