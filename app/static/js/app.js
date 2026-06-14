@@ -264,10 +264,11 @@ async function fetchSettings() {
 // Initialize Speech Recognition
 function initSpeechRecognition() {
     const isSafari = /^((?!chrome|android|crios).)*safari/i.test(navigator.userAgent);
+    const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
     const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
     
-    // Fallback if Safari is detected, or SpeechRecognition is completely absent
-    if (isSafari || !SpeechRecognition) {
+    // Fallback if Safari is detected, iOS is detected, or SpeechRecognition is completely absent
+    if (isSafari || isIOS || !SpeechRecognition) {
         useAudioRecorder = true;
     }
 
@@ -325,6 +326,32 @@ function initSpeechRecognition() {
 
     recognition.onerror = (event) => {
         console.error("Speech Recognition Error:", event.error);
+        if (event.error === "service-not-allowed") {
+            console.warn("[SpeechRecognition] service-not-allowed encountered. Falling back to MediaRecorder.");
+            try { recognition.abort(); } catch(e) {}
+            
+            useAudioRecorder = true;
+            if (window.MediaRecorder && navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
+                showToast("Switching Dictation Mode", "Speech service not allowed on this browser. Falling back to audio recording.", "info");
+                recordState.textContent = "Click microphone to start recording";
+                
+                // Reset standard dictation visual states
+                recognitionState = "stopped";
+                isRecording = false;
+                recordIcon.className = "fa-solid fa-microphone";
+                recordButton.classList.remove("recording");
+                
+                // Auto start audio recording fallback
+                startAudioRecording();
+            } else {
+                showToast("Dictation Error", "Web Speech service not allowed and audio recording is unsupported on this browser.", "error");
+                recordState.textContent = "Recording not supported on this browser. Please upload audio files.";
+                recordButton.disabled = true;
+                recordButton.style.opacity = "0.5";
+            }
+            return;
+        }
+        
         if (event.error !== "no-speech") {
             showToast("Dictation Error", `Error: ${event.error}`, "error");
         }
