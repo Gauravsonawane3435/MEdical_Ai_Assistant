@@ -2,6 +2,8 @@ import os
 import logging
 import mimetypes
 import time
+import subprocess
+import tempfile
 from typing import Optional
 from huggingface_hub import InferenceClient
 from huggingface_hub.utils import HfHubHTTPError
@@ -24,6 +26,55 @@ def get_audio_mime_type(content_type: Optional[str] = None, filename: Optional[s
             
     # Fallback default
     return "audio/wav"
+
+def convert_audio_to_wav_16k(audio_bytes: bytes) -> bytes:
+    """
+    Converts input audio bytes (e.g. webm/opus) to 16kHz mono PCM WAV format.
+    Requires the ffmpeg executable on the system path.
+    """
+    with tempfile.NamedTemporaryFile(delete=False) as temp_in:
+        temp_in.write(audio_bytes)
+        temp_in_name = temp_in.name
+        
+    temp_out_name = temp_in_name + ".wav"
+    
+    try:
+        cmd = ["ffmpeg", "-y", "-i", temp_in_name, "-ar", "16000", "-ac", "1", "-f", "wav", temp_out_name]
+        logger.info(f"[AudioConverter] Running command: {' '.join(cmd)}")
+        
+        startupinfo = None
+        if os.name == 'nt':
+            startupinfo = subprocess.STARTUPINFO()
+            startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+            
+        result = subprocess.run(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            startupinfo=startupinfo,
+            check=True
+        )
+        
+        with open(temp_out_name, "rb") as f:
+            wav_bytes = f.read()
+            
+        logger.info(f"[AudioConverter] Successfully converted audio to WAV. Size: {len(wav_bytes)} bytes")
+        return wav_bytes
+        
+    except subprocess.CalledProcessError as e:
+        stderr_msg = e.stderr.decode('utf-8', errors='ignore') if e.stderr else "Unknown error"
+        logger.error(f"[AudioConverter] ffmpeg failed with code {e.returncode}. stderr: {stderr_msg}")
+        raise RuntimeError(f"ffmpeg conversion failed: {stderr_msg}")
+    except FileNotFoundError:
+        logger.error("[AudioConverter] ffmpeg executable not found on the system path.")
+        raise RuntimeError("ffmpeg executable not found on the system path. Please ensure ffmpeg is installed.")
+    finally:
+        if os.path.exists(temp_in_name):
+            try: os.remove(temp_in_name)
+            except: pass
+        if os.path.exists(temp_out_name):
+            try: os.remove(temp_out_name)
+            except: pass
 
 class TranscriptionService:
     def __init__(self):
@@ -60,6 +111,24 @@ class TranscriptionService:
         # Detect and log correct audio MIME Type
         mime_type = get_audio_mime_type(content_type, filename)
         logger.info(f"[Backend] Processing ASR bytes: filename='{filename}', mime_type='{mime_type}', model='{model_id}'")
+        
+        # Check if the incoming file is a WebM recording (Chrome / mobile browser default)
+        # WebM with opus codecs frequently triggers router/content-type errors on Hugging Face.
+        # We convert it to a standard mono WAV file (16kHz PCM) on the server.
+        is_webm = "webm" in mime_type.lower() or (filename and filename.lower().endswith((".webm", ".weba")))
+        if is_webm:
+            logger.info("[Backend] WebM audio detected. Converting to standard WAV (16kHz mono) for Hugging Face compatibility...")
+            try:
+                audio_bytes = convert_audio_to_wav_16k(audio_bytes)
+                mime_type = "audio/wav"
+                filename = "recording.wav"
+                logger.info("[Backend] Conversion successful. Updated parameters to WAV.")
+            except Exception as e:
+                logger.error(f"[Backend] WebM to WAV conversion failed: {e}")
+                raise RuntimeError(
+                    f"Audio conversion failed: ffmpeg is required on the server to decode and transcribe webm recordings, "
+                    f"but conversion failed. Details: {str(e)}"
+                )
         
         # Hugging Face serverless router rejects some non-standard audio MIME types (like audio/mp4, audio/m4a, audio/aac).
         # We map these to application/octet-stream to allow Whisper's backend to decode them from container headers.
