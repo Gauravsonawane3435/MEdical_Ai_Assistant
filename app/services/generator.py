@@ -74,10 +74,15 @@ class NoteGeneratorService:
                         f"- Main topic discussed: {transcript.strip()[:200]}...\n\n"
                         "Decision: Factual extraction completed. All missing medical details marked 'Not specified'."
                     )
-                sanitized_content = self._sanitize_general_section(raw_content, transcript)
+                validated_raw_note = self._llama_validate_and_correct(
+                    raw_note=raw_content,
+                    transcript=transcript,
+                    hf_token=token
+                )
+                sanitized_content = self._sanitize_general_section(validated_raw_note, transcript)
                 return {
-                    "raw_note": raw_content,
-                    "model_used": "Demo Mode (Mock Custom Model)",
+                    "raw_note": validated_raw_note,
+                    "model_used": "Demo Mode (Mock Custom Model) + Llama Validation Simulator",
                     "custom_output": sanitized_content,
                     "mode": "custom"
                 }
@@ -130,11 +135,16 @@ class NoteGeneratorService:
                 )
                 model_id = "Demo Mode (Mock General Physician Model)"
             
-            parsed_sections = self._parse_note_sections(raw_content)
+            validated_raw_note = self._llama_validate_and_correct(
+                raw_note=raw_content,
+                transcript=transcript,
+                hf_token=token
+            )
+            parsed_sections = self._parse_note_sections(validated_raw_note)
             sanitized_sections = self._validate_and_sanitize_note(parsed_sections, transcript)
             return {
-                "raw_note": raw_content,
-                "model_used": model_id,
+                "raw_note": validated_raw_note,
+                "model_used": f"{model_id} + Llama Validation Simulator",
                 **sanitized_sections,
                 "mode": "structured"
             }
@@ -208,21 +218,28 @@ class NoteGeneratorService:
             raw_content = response.choices[0].message.content
             logger.info(f"[Backend] Note generation successful. Response length: {len(raw_content)} characters.")
             
+            # Step 1.5: Run Llama validation and correction layer
+            validated_raw_note = self._llama_validate_and_correct(
+                raw_note=raw_content,
+                transcript=transcript,
+                hf_token=token
+            )
+            
             if mode == "custom":
-                sanitized_content = self._sanitize_general_section(raw_content, transcript)
+                sanitized_content = self._sanitize_general_section(validated_raw_note, transcript)
                 return {
-                    "raw_note": raw_content,
-                    "model_used": model_id,
+                    "raw_note": validated_raw_note,
+                    "model_used": f"{model_id} + Llama-3.3-70B-Instruct Validation",
                     "custom_output": sanitized_content,
                     "mode": "custom"
                 }
             else:
-                parsed_sections = self._parse_note_sections(raw_content)
+                parsed_sections = self._parse_note_sections(validated_raw_note)
                 sanitized_sections = self._validate_and_sanitize_note(parsed_sections, transcript)
                 
                 return {
-                    "raw_note": raw_content,
-                    "model_used": model_id,
+                    "raw_note": validated_raw_note,
+                    "model_used": f"{model_id} + Llama-3.3-70B-Instruct Validation",
                     **sanitized_sections,
                     "mode": "structured"
                 }
@@ -718,5 +735,75 @@ class NoteGeneratorService:
                 sections[section_name] = self._sanitize_general_section(sections[section_name], transcript)
                 
         return sections
+
+    def _llama_validate_and_correct(
+        self,
+        raw_note: str,
+        transcript: str,
+        hf_token: Optional[str] = None
+    ) -> str:
+        """
+        Runs a second Llama-based validation/correction layer on the generated clinical note.
+        Improves medical terminology, corrects clinical terms based on the transcript,
+        and preserves format and original clinical meaning without hallucinating.
+        """
+        if not raw_note or not raw_note.strip():
+            return ""
+
+        token = hf_token or settings.HF_TOKEN
+        is_demo = not token or token.strip().lower() in ("", "demo", "test", "mock", "none", "hf_demo")
+        
+        if is_demo:
+            logger.info("[NoteGeneratorService] Llama validation layer: Demo mode. Skipping LLM request.")
+            return raw_note
+
+        llama_model_id = "meta-llama/Llama-3.3-70B-Instruct"
+        logger.info(f"[NoteGeneratorService] Llama validation layer starting using: {llama_model_id}")
+
+        sys_prompt = (
+            "You are a senior clinical validation AI assistant.\n"
+            "Your task is to review, correct, and improve the generated clinical note based strictly on the provided doctor-patient transcript.\n\n"
+            "Rules:\n"
+            "1. Improve and correct medical terminology, spelling, and abbreviations using the transcript as the ground truth.\n"
+            "2. Keep the exact format, structure, and headers of the original note (whether it is structured with headers or plain free-text). Do not change, add, or remove headers.\n"
+            "3. Preserve the original clinical meaning. Do not change the clinical observations.\n"
+            "4. NEVER hallucinate or add any new medical findings, medications, dosages, or details that are not present in both the original note and transcript.\n"
+            "5. If a word or phrase in the note is a misspelled clinical term (e.g. from speech-to-text error), correct it to the correct medical spelling as spoken in the transcript.\n"
+            "6. Output ONLY the validated and corrected clinical note. Do not include any explanations, introduction, or metadata."
+        )
+
+        user_content = (
+            f"Doctor-Patient Transcript:\n\"\"\"\n{transcript}\n\"\"\"\n\n"
+            f"Original Generated Note:\n\"\"\"\n{raw_note}\n\"\"\"\n\n"
+            f"Corrected Clinical Note:"
+        )
+
+        try:
+            client = InferenceClient(
+                token=token,
+                base_url="https://router.huggingface.co/v1"
+            )
+            
+            messages = [
+                {"role": "system", "content": sys_prompt},
+                {"role": "user", "content": user_content}
+            ]
+            
+            response = client.chat_completion(
+                model=llama_model_id,
+                messages=messages,
+                max_tokens=1500,
+                temperature=0.1,
+            )
+            
+            validated_content = response.choices[0].message.content
+            if validated_content and validated_content.strip():
+                logger.info("[NoteGeneratorService] Llama validation layer successful.")
+                return validated_content.strip()
+                
+        except Exception as e:
+            logger.error(f"[NoteGeneratorService] Llama validation layer failed: {e}. Falling back to original note.")
+            
+        return raw_note
 
 note_generator_service = NoteGeneratorService()

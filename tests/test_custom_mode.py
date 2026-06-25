@@ -99,9 +99,9 @@ def test_custom_mode_llm_client_call(mock_client_cls):
     assert result["mode"] == "custom"
     assert result["custom_output"] == "Custom model output text about headache"
     
-    # Check that system and user messages were structured correctly
-    mock_client.chat_completion.assert_called_once()
-    call_kwargs = mock_client.chat_completion.call_args[1]
+    # Check that system and user messages were structured correctly (first call of 2)
+    assert mock_client.chat_completion.call_count == 2
+    call_kwargs = mock_client.chat_completion.call_args_list[0][1]
     
     messages = call_kwargs["messages"]
     assert len(messages) == 2
