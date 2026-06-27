@@ -105,4 +105,14 @@ def test_api_dynamic_fields_response(mock_generate):
     
     # Custom keys must be dynamically included
     assert clinical_note["past_surgeries"] == "Cholecystectomy in 2020."
+    
+    # Spaced/cased keys mapped by expand_clinical_note_sections should be present and correct
+    assert clinical_note["Chief Complaint"] == "Severe migraine."
+    assert clinical_note["chiefComplaint"] == "Severe migraine."
+    assert clinical_note["CC"] == "Severe migraine."
+    assert clinical_note["Assessment"] == "Migraine headache."
+    assert clinical_note["Plan"] == "Rest."
+    assert clinical_note["Medications"] == ""
+    assert clinical_note["Allergies"] == "Sulfa drugs."
     assert clinical_note["allergies"] == "Sulfa drugs."
+    assert clinical_note["Allergy"] == "Sulfa drugs."

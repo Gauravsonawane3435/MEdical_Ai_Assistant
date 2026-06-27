@@ -137,6 +137,87 @@ async def transcribe_audio(
             )
         raise HTTPException(status_code=500, detail=f"Audio transcription failed: {err_msg}")
 
+def expand_clinical_note_sections(note_data: dict) -> dict:
+    """
+    Dynamically maps and duplicates parsed clinical note sections to support spaced, 
+    capitalized, and synonym keys expected by different doctor template frontends.
+    """
+    groups = [
+        # (source_keys, target_keys)
+        (["chief_complaint", "chief_complaints", "cc"], 
+         ["chief_complaint", "Chief Complaint", "chiefComplaint", "cc", "CC"]),
+        
+        (["hpi", "history_of_present_illness", "procedure", "obstetric_history", "obstetric_gynecological_history", "history"], 
+         ["hpi", "HPI", "history_of_present_illness", "History of Present Illness"]),
+        
+        (["ros", "review_of_systems"], 
+         ["ros", "ROS", "review_of_systems", "Review of Systems"]),
+        
+        (["physical_exam", "physical_examination", "exam", "examination", "physical"], 
+         ["physical_exam", "Physical Exam", "physical_examination", "Physical Examination", "physicalExam"]),
+        
+        (["assessment", "clinical_impression", "impression"], 
+         ["assessment", "Assessment", "clinical_impression", "clinicalImpression"]),
+        
+        (["diagnosis", "diagnoses", "clinical_impression", "impression", "assessment"], 
+         ["diagnosis", "Diagnosis", "diagnoses", "Diagnoses"]),
+        
+        (["differential_diagnosis", "differential_diagnoses", "ddx"], 
+         ["differential_diagnosis", "Differential Diagnosis", "differential_diagnoses", "Differential Diagnoses", "ddx", "DDx"]),
+        
+        (["plan", "management_plan"], 
+         ["plan", "Plan", "management_plan", "Management Plan"]),
+        
+        (["treatment", "management", "plan"], 
+         ["treatment", "Treatment"]),
+        
+        (["prescription", "medications", "current_medications", "rx", "meds"], 
+         ["prescription", "Prescription", "medications", "Medications", "current_medications", "Current Medications", "rx", "Rx", "meds"]),
+        
+        (["follow_up", "followup", "next_visit"], 
+         ["follow_up", "Follow-up", "Follow-Up", "followup", "Followup"]),
+        
+        (["recommended_tests", "investigations", "tests", "labs", "imaging"], 
+         ["recommended_tests", "Recommended Tests", "investigations", "Investigations", "tests", "Tests"]),
+        
+        (["past_medical_history", "past_history", "pmh", "medical_history"], 
+         ["past_medical_history", "Past Medical History", "pmh", "PMH"]),
+        
+        (["allergies", "allergy"], 
+         ["allergies", "Allergies", "allergy", "Allergy"]),
+        
+        (["vital_signs", "vitals"], 
+         ["vital_signs", "Vital Signs", "vitals", "Vitals"])
+    ]
+    
+    expanded = {}
+    
+    # Initialize all targets to empty string to keep backward compatibility and avoid None/missing errors
+    for _, target_keys in groups:
+        for tk in target_keys:
+            expanded[tk] = ""
+            
+    # For each group, search the source keys in priority order
+    for source_keys, target_keys in groups:
+        val = ""
+        for sk in source_keys:
+            if note_data.get(sk):
+                val = note_data[sk]
+                break
+        
+        # Populate all targets
+        if val:
+            for tk in target_keys:
+                expanded[tk] = val
+
+    # Preserve any other non-mapped keys from the original note_data (e.g. metadata)
+    all_target_keys = {tk for _, tks in groups for tk in tks}
+    for k, v in note_data.items():
+        if k not in all_target_keys:
+            expanded[k] = v
+            
+    return expanded
+
 # API Route to generate structured clinical note
 @app.post("/api/generate-note")
 async def generate_note(request: NoteGenerationRequest):
@@ -199,22 +280,16 @@ async def generate_note(request: NoteGenerationRequest):
                 logger.error(f"[Backend] Prescription Service extraction failed: {e}.")
 
             # Structured response elements
-            standard_keys = {
-                "chief_complaint", "hpi", "assessment", "plan", 
-                "prescription", "recommended_tests", "follow_up"
-            }
+            clinical_note = expand_clinical_note_sections(note_data)
             
-            # Start with standard keys pre-populated
-            clinical_note = {key: note_data.get(key, "") for key in standard_keys}
-            
-            # Add metadata keys
+            # Explicitly guarantee standard keys exist for 100% backward compatibility
+            for key in ["chief_complaint", "hpi", "assessment", "plan", "prescription", "recommended_tests", "follow_up"]:
+                if key not in clinical_note or clinical_note[key] is None:
+                    clinical_note[key] = ""
+                    
+            # Ensure metadata keys are set correctly
             clinical_note["raw_note"] = note_data.get("raw_note", "")
             clinical_note["model_used"] = note_data.get("model_used", "")
-            
-            # Dynamically add any other custom sections returned by the generator
-            for key, val in note_data.items():
-                if key not in standard_keys and key not in {"raw_note", "model_used", "mode"}:
-                    clinical_note[key] = val
 
             # Return combined backward-compatible structured response
             return {
